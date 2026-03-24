@@ -1470,34 +1470,60 @@ export default async function () {
 
         ipc.server.on( 'send:message', async ( data: { token: string, nodeParameters: IDiscordInteractionMessageParameters }, socket: any ) => {
             try {
-
+ 
                 console.log( `send message for ${ data.token }` );
-
+ 
                 const client = settings.clientMap[ data.token ];
-
+ 
                 const nodeParameters = data.nodeParameters;
                 if ( !client || !settings.readyClients[ data.token ] ) return;
                 console.log( "client ready", client.user?.tag );
-
-
-                // fetch channel
-                const channel = <TextChannel> client.channels.cache.get( nodeParameters.channelId );
-                if ( !channel || !channel.isTextBased() ) return;
-
+ 
+                // Resolve the target channel ID.
+                // effectiveChannelId is set by DiscordInteraction.node.ts and already
+                // accounts for the channelType (guild vs dm) selection.
+                // We fall back to channelId for backwards compatibility with older
+                // workflow versions that don't have the channelType field.
+                const targetChannelId = nodeParameters.effectiveChannelId || nodeParameters.channelId;
+ 
+                if ( !targetChannelId ) {
+                    console.error( 'send:message: no channel ID resolved' );
+                    ipc.server.emit( socket, 'callback:send:message', false );
+                    return;
+                }
+ 
+                // Fetch the channel — this works for both TextChannel (guild) and
+                // DMChannel. client.channels.fetch() is used instead of .cache.get()
+                // because DM channels are not always pre-cached on startup.
+                let channel: any;
+                try {
+                    channel = await client.channels.fetch( targetChannelId );
+                } catch ( fetchError ) {
+                    console.error( `send:message: could not fetch channel ${ targetChannelId }:`, fetchError );
+                    ipc.server.emit( socket, 'callback:send:message', false );
+                    return;
+                }
+ 
+                if ( !channel || !channel.isTextBased() ) {
+                    console.error( `send:message: channel ${ targetChannelId } not found or not text-based` );
+                    ipc.server.emit( socket, 'callback:send:message', false );
+                    return;
+                }
+ 
                 const preparedMessage = prepareMessage( nodeParameters );
-
+ 
                 // finally send the message and report back to the listener
                 const message = await channel.send( preparedMessage );
                 ipc.server.emit( socket, 'callback:send:message', {
                     channelId: channel.id,
                     messageId: message.id
                 } );
+ 
             } catch ( e ) {
                 console.log( `${ e }` );
                 ipc.server.emit( socket, 'callback:send:message', false );
             }
         } );
-
 
         ipc.server.on( 'send:action', async ( data: { token: string, nodeParameters: IDiscordNodeActionParameters }, socket: any ) => {
             try {
