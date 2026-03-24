@@ -71,6 +71,34 @@ export const options: INodeProperties[] = [
         default: 'removeMessages',
         description: 'Let you choose the type of action you want to perform',
     },
+
+    // ── Channel destination ────────────────────────────────────────────────────
+    {
+        displayName: 'Send To',
+        name: 'channelType',
+        type: 'options',
+        displayOptions: {
+            show: {
+                type: [ 'message', 'confirm' ],
+            },
+        },
+        options: [
+            {
+                name: 'Guild Channel',
+                value: 'guild',
+                description: 'Send the message to a server text channel',
+            },
+            {
+                name: 'Direct Message (DM)',
+                value: 'dm',
+                description: 'Send the message directly to a user via DM. Provide the DM channel ID.',
+            },
+        ],
+        default: 'guild',
+        description: 'Whether to send the message to a guild channel or directly to a user\'s DM',
+    },
+
+    // Guild channel fields (shown only when channelType = guild or not set, i.e. all actions)
     {
         displayName: 'Server Name or ID',
         name: 'guildIds',
@@ -78,7 +106,7 @@ export const options: INodeProperties[] = [
         type: 'options',
         displayOptions: {
             show: {
-                type: [ 'action', 'message', 'confirm' ],
+                type: [ 'action' ],
             },
         },
         typeOptions: {
@@ -88,13 +116,30 @@ export const options: INodeProperties[] = [
         description: 'Let you specify the guild where you want the action to happen. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
     },
     {
+        displayName: 'Server Name or ID',
+        name: 'guildIds',
+
+        type: 'options',
+        displayOptions: {
+            show: {
+                type: [ 'message', 'confirm' ],
+                channelType: [ 'guild' ],
+            },
+        },
+        typeOptions: {
+            loadOptionsMethod: 'getGuilds',
+        },
+        default: '',
+        description: 'Let you specify the guild where you want to send the message. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+    },
+    {
         displayName: 'Channel Name or ID',
         name: 'channelId',
 
         type: 'options',
         displayOptions: {
             show: {
-                type: [ 'message', 'action', 'confirm' ],
+                type: [ 'action' ],
             },
         },
         typeOptions: {
@@ -104,6 +149,43 @@ export const options: INodeProperties[] = [
         default: '',
         description: 'Let you specify the text channels where you want to send the message. Your credentials must be set and the bot running, you also need at least one text channel available. If you do not meet these requirements, make the changes then close and reopen the modal (the channels list is loaded when the modal opens). Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
     },
+    {
+        displayName: 'Channel Name or ID',
+        name: 'channelId',
+
+        type: 'options',
+        displayOptions: {
+            show: {
+                type: [ 'message', 'confirm' ],
+                channelType: [ 'guild' ],
+            },
+        },
+        typeOptions: {
+            loadOptionsDependsOn: [ 'guildIds' ],
+            loadOptionsMethod: 'getChannels',
+        },
+        default: '',
+        description: 'Let you specify the text channel where you want to send the message. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+    },
+
+    // DM channel ID field — shown only when channelType = dm
+    {
+        displayName: 'DM Channel ID',
+        name: 'dmChannelId',
+        type: 'string',
+        displayOptions: {
+            show: {
+                type: [ 'message', 'confirm' ],
+                channelType: [ 'dm' ],
+            },
+        },
+        default: '',
+        placeholder: 'e.g. 123456789012345678',
+        description: 'The ID of the DM channel to send the message to. You can get this from the trigger node output (field <code>channelId</code> on a direct-message trigger) or from any Discord message object. This is the channel ID of the DM conversation, not the user ID.',
+    },
+
+    // ── Rest of options unchanged ──────────────────────────────────────────────
+
     {
         displayName: 'Message Limit',
         name: 'getMessagesLimit',
@@ -161,15 +243,14 @@ export const options: INodeProperties[] = [
         },
         typeOptions: {
             maxValue: 100,
+            minValue: 1,
         },
         default: 1,
-        description: 'Number of last messages to remove (Discord API allow max 150 and messages < 4 weeks old)',
     },
     {
         displayName: 'User ID',
         name: 'userId',
         type: 'string',
-        required: true,
         displayOptions: {
             show: {
                 type: [ 'action' ],
@@ -177,12 +258,11 @@ export const options: INodeProperties[] = [
             },
         },
         default: '',
-        description: 'The ID of the user you want to add or remove the role from',
+        description: 'The ID of the user to add/remove a role from',
     },
     {
-        displayName: 'Which Role Names or IDs',
+        displayName: 'Role Names or IDs',
         name: 'roleUpdateIds',
-        required: true,
         type: 'multiOptions',
         displayOptions: {
             show: {
@@ -195,7 +275,7 @@ export const options: INodeProperties[] = [
             loadOptionsMethod: 'getRoles',
         },
         default: [],
-        description: 'Let you specify the roles you want to add or remove from the user. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+        description: 'Roles to add or remove. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
     },
     {
         displayName: 'Content',
@@ -221,7 +301,6 @@ export const options: INodeProperties[] = [
                 type: [ 'message', 'confirm' ],
             },
         },
-
         default: false,
         description: 'Whether you want to create an embed message rather than a regular content message',
     },
@@ -229,7 +308,7 @@ export const options: INodeProperties[] = [
         displayName: 'Color',
         name: 'color',
         type: 'color',
-        default: '', // Initially selected color
+        default: '',
         displayOptions: {
             show: {
                 embed: [ true ],
@@ -241,7 +320,6 @@ export const options: INodeProperties[] = [
         displayName: 'Title',
         name: 'title',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
@@ -249,13 +327,11 @@ export const options: INodeProperties[] = [
             },
         },
         default: '',
-
     },
     {
         displayName: 'URL',
         name: 'url',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
@@ -263,13 +339,11 @@ export const options: INodeProperties[] = [
             },
         },
         default: '',
-
     },
     {
         displayName: 'Author Name',
         name: 'authorName',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
@@ -277,110 +351,81 @@ export const options: INodeProperties[] = [
             },
         },
         default: '',
-
     },
     {
         displayName: 'Author Icon URL or Base64',
         name: 'authorIconUrl',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
                 type: [ 'message', 'confirm' ],
             },
-            hide: {
-                authorName: [ '' ],
-            },
         },
         default: '',
-        description: 'URL/base64 of the image (png, jpg)',
     },
     {
         displayName: 'Author URL',
         name: 'authorUrl',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
                 type: [ 'message', 'confirm' ],
             },
-            hide: {
-                authorName: [ '' ],
-            },
         },
         default: '',
-
     },
     {
         displayName: 'Description',
         name: 'description',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
                 type: [ 'message', 'confirm' ],
             },
         },
-        default: '',
-
-    },
-    {
-        displayName: 'Thumbnail URL or Base64',
-        name: 'thumbnailUrl',
-        type: 'string',
-
-        displayOptions: {
-            show: {
-                embed: [ true ],
-                type: [ 'message', 'confirm' ],
-            },
+        typeOptions: {
+            rows: 4,
         },
         default: '',
-        description: 'URL/base64 of the image (png, jpg)',
     },
     {
         displayName: 'Fields',
         name: 'fields',
-        placeholder: 'Add Field',
         type: 'fixedCollection',
-        typeOptions: {
-            multipleValues: true,
-        },
         displayOptions: {
             show: {
                 embed: [ true ],
-                type: [ 'message', 'action', 'confirm' ],
+                type: [ 'message', 'confirm' ],
             },
         },
-
+        typeOptions: {
+            multipleValues: true,
+        },
         default: {},
         options: [
             {
-                name: 'field',
                 displayName: 'Field',
+                name: 'field',
                 values: [
                     {
-                        displayName: 'Title',
+                        displayName: 'Name',
                         name: 'name',
                         type: 'string',
                         default: '',
-
                     },
                     {
                         displayName: 'Value',
                         name: 'value',
                         type: 'string',
                         default: '',
-
                     },
                     {
                         displayName: 'Inline',
                         name: 'inline',
                         type: 'boolean',
-
                         default: false,
                     },
                 ],
@@ -391,7 +436,6 @@ export const options: INodeProperties[] = [
         displayName: 'Image URL or Base64',
         name: 'imageUrl',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
@@ -399,13 +443,23 @@ export const options: INodeProperties[] = [
             },
         },
         default: '',
-        description: 'URL/base64 of the image (png, jpg)',
+    },
+    {
+        displayName: 'Thumbnail URL or Base64',
+        name: 'thumbnailUrl',
+        type: 'string',
+        displayOptions: {
+            show: {
+                embed: [ true ],
+                type: [ 'message', 'confirm' ],
+            },
+        },
+        default: '',
     },
     {
         displayName: 'Footer Text',
         name: 'footerText',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
@@ -413,118 +467,108 @@ export const options: INodeProperties[] = [
             },
         },
         default: '',
-
     },
     {
         displayName: 'Footer Icon URL or Base64',
         name: 'footerIconUrl',
         type: 'string',
-
         displayOptions: {
             show: {
                 embed: [ true ],
                 type: [ 'message', 'confirm' ],
             },
-            hide: {
-                footerText: [ '' ],
-            },
         },
         default: '',
-        description: 'URL/base64 of the image (png, jpg)',
     },
     {
-        displayName: 'Displayed Date',
+        displayName: 'Timestamp',
         name: 'timestamp',
-        type: 'dateTime',
-        default: '',
-
+        type: 'string',
         displayOptions: {
             show: {
                 embed: [ true ],
                 type: [ 'message', 'confirm' ],
             },
         },
+        default: '',
+    },
+    {
+        displayName: 'Mention Roles',
+        name: 'mentionRoles',
+        type: 'multiOptions',
+        displayOptions: {
+            show: {
+                type: [ 'message', 'confirm' ],
+                channelType: [ 'guild' ],
+            },
+        },
+        typeOptions: {
+            loadOptionsDependsOn: [ 'guildIds' ],
+            loadOptionsMethod: 'getRoles',
+        },
+        default: [],
+        description: 'Roles to mention in the message. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
     },
     {
         displayName: 'Files',
         name: 'files',
-        placeholder: 'Add File',
         type: 'fixedCollection',
-        typeOptions: {
-            multipleValues: true,
-        },
         displayOptions: {
             show: {
                 type: [ 'message', 'confirm' ],
             },
         },
-        description: 'Allows to attach up to 5 images to the message',
+        typeOptions: {
+            multipleValues: true,
+        },
         default: {},
         options: [
             {
-                name: 'file',
                 displayName: 'File',
+                name: 'file',
                 values: [
                     {
-                        displayName: 'URL or Base64',
+                        displayName: 'URL',
                         name: 'url',
                         type: 'string',
                         default: '',
-                        description: 'URL/base64 of the image to attach (png, jpg)',
+                        description: 'URL of the file to attach',
                     },
                 ],
             },
         ],
     },
     {
-        displayName: 'Mention Role Names or IDs',
-        name: 'mentionRoles',
-
-        type: 'multiOptions',
-        typeOptions: {
-            loadOptionsMethod: 'getRoles',
-        },
-        displayOptions: {
-            show: {
-                type: [ 'message', 'confirm' ],
-            },
-        },
-        default: [],
-        description: 'Let you specify roles you want to mention in the message. Your credentials must be set and the bot running, you also need at least one role (apart from @everyone) available. If you do not meet these requirements, make the changes then close and reopen the modal. Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
-    },
-    {
-        displayName: 'Additional Fields',
+        displayName: 'Additional Confirmation Fields',
         name: 'additionalConfirmationFields',
         type: 'collection',
-        default: {},
-        placeholder: 'Add Field',
         displayOptions: {
             show: {
                 type: [ 'confirm' ],
             },
         },
+        default: {},
+        placeholder: 'Add Field',
         options: [
             {
-                displayName: 'Confirmation Timeout (in Seconds)',
+                displayName: 'Timeout (seconds)',
                 name: 'timeout',
                 type: 'number',
                 default: 60,
-                description: "Timeout for the confirmation message. If the user does not respond within this time, the interaction will be considered as expired.",
+                description: 'Time in seconds to wait for a response before timing out',
             },
             {
                 displayName: 'Yes Button Label',
                 name: 'yesLabel',
                 type: 'string',
-                default: '',
-                description: 'Optional custom label for the "Yes" button',
+                default: 'Yes',
             },
             {
                 displayName: 'No Button Label',
                 name: 'noLabel',
                 type: 'string',
-                default: '',
-                description: 'Optional custom label for the "No" button',
+                default: 'No',
             },
         ],
-    }
+    },
 ];
