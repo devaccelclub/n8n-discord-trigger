@@ -39,7 +39,9 @@ export interface IDiscordInteractionMessageParameters {
     executionId: string;
     triggerPlaceholder: boolean;
     triggerChannel: boolean;
-    channelId: string;
+    channelType: 'guild' | 'dm';  // NEW: destination selector
+    channelId: string;             // guild channel ID (used when channelType = 'guild')
+    dmChannelId: string;           // DM channel ID (used when channelType = 'dm')
     embed: boolean;
     title: string;
     description: string;
@@ -183,11 +185,13 @@ export class DiscordInteraction implements INodeType {
             });
 
             // Prepare the node parameters to send to the bot
-
             const nodeParameters: Record<string, any> = {};
             Object.keys(this.getNode().parameters).forEach((key) => {
                 nodeParameters[key] = this.getNodeParameter(key, 0, '');
             });
+
+            // Resolve the effective channel ID before sending to bot
+            nodeParameters.effectiveChannelId = resolveChannelId(nodeParameters);
 
             const response: any = await new Promise((resolve) => {
                 ipc.config.retry = 1500;
@@ -225,51 +229,51 @@ export class DiscordInteraction implements INodeType {
                 });
                 nodeParameters.executionId = executionId;
 
-                // Handle support ticket actions directly with helper functions
-                if (nodeParameters.type === 'action' && nodeParameters.actionType === 'checkChannelStatus') {
-                    const status = await checkChannelStatus(nodeParameters.channelId);
-                    returnData.push({
-                        json: {
-                            channelId: nodeParameters.channelId,
-                            isDisabled: status.isDisabled,
-                            isEnabled: status.isEnabled,
-                            action: 'checkChannelStatus',
-                        },
-                    });
-                    continue;
+                // Resolve effective channel ID for action and message types
+                if (nodeParameters.type === 'message') {
+                    nodeParameters.effectiveChannelId = resolveChannelId(nodeParameters);
                 }
 
-                if (nodeParameters.type === 'action' && nodeParameters.actionType === 'toggleChannelStatus') {
-                    const action = nodeParameters.toggleAction || 'close';
-                    const result = await toggleChannelStatus(nodeParameters.channelId, action);
-                    returnData.push({
-                        json: {
-                            success: result.success,
-                            channelId: nodeParameters.channelId,
-                            action: result.action,
-                        },
-                    });
-                    continue;
-                }
-
-                // Handle getMessages action with helper function
-                if (nodeParameters.type === 'action' && nodeParameters.actionType === 'getMessages') {
-                    const limit = nodeParameters.getMessagesLimit || 10;
-                    const result = await getMessagesHelper(credentials.token, nodeParameters.channelId, limit);
-
-                    // Handle response
-                    if (result?.action === 'getMessages' && result?.messages) {
-                        // Return each message as a separate item
-                        result.messages.forEach((message: any) => {
-                            returnData.push({ json: message });
-                        });
-                    } else {
+                // Handle helper-based actions (toggleChannelStatus, checkChannelStatus, getMessages)
+                // that bypass IPC and call the Discord API directly via helper functions.
+                if (nodeParameters.type === 'action') {
+                    if (nodeParameters.actionType === 'toggleChannelStatus') {
+                        const result = await toggleChannelStatus(
+                            credentials,
+                            nodeParameters.channelId,
+                            nodeParameters.toggleAction,
+                        ).catch((e: any) => e);
                         returnData.push({ json: result || {} });
+                        continue;
                     }
-                    continue;
+
+                    if (nodeParameters.actionType === 'checkChannelStatus') {
+                        const result = await checkChannelStatus(
+                            credentials,
+                            nodeParameters.channelId,
+                        ).catch((e: any) => e);
+                        returnData.push({ json: result || {} });
+                        continue;
+                    }
+
+                    if (nodeParameters.actionType === 'getMessages') {
+                        const result = await getMessagesHelper(
+                            credentials,
+                            nodeParameters.channelId,
+                            nodeParameters.getMessagesLimit,
+                        ).catch((e: any) => e);
+                        if (result?.messages) {
+                            result.messages.forEach((message: any) => {
+                                returnData.push({ json: message });
+                            });
+                        } else {
+                            returnData.push({ json: result || {} });
+                        }
+                        continue;
+                    }
                 }
 
-                if (nodeParameters.channelId || nodeParameters.executionId) {
+                if (nodeParameters.channelId || nodeParameters.effectiveChannelId || nodeParameters.executionId) {
                     // return the interaction result if there is one
                     const res: any = await new Promise((resolve, reject) => {
                         const timeout = setTimeout(() => {
@@ -301,7 +305,7 @@ export class DiscordInteraction implements INodeType {
                             ipc.of.bot.on('connect', () => {
                                 console.log('Connected to bot IPC, emitting event:', type, nodeParameters);
                                 // Now send the event
-                                ipc.of.bot.emit(type, {token: credentials.token, nodeParameters:nodeParameters});
+                                ipc.of.bot.emit(type, {token: credentials.token, nodeParameters: nodeParameters});
                             });
 
                             ipc.of.bot.on('disconnect', () => {
@@ -347,4 +351,17 @@ export class DiscordInteraction implements INodeType {
             return this.prepareOutputData(returnData);
         }
     }
+}
+
+/**
+ * Resolves the effective channel ID to use for sending a message.
+ * For guild channel mode: uses channelId (selected from dropdown).
+ * For DM mode: uses dmChannelId (entered manually by the user).
+ * Falls back to channelId if channelType is not set (backwards compatibility).
+ */
+function resolveChannelId(nodeParameters: any): string {
+    if (nodeParameters.channelType === 'dm') {
+        return nodeParameters.dmChannelId || '';
+    }
+    return nodeParameters.channelId || '';
 }
