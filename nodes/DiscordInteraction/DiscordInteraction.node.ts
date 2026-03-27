@@ -239,7 +239,6 @@ export class DiscordInteraction implements INodeType {
                 if (nodeParameters.type === 'action') {
                     if (nodeParameters.actionType === 'toggleChannelStatus') {
                         const result = await toggleChannelStatus(
-                            credentials,
                             nodeParameters.channelId,
                             nodeParameters.toggleAction,
                         ).catch((e: any) => e);
@@ -249,7 +248,6 @@ export class DiscordInteraction implements INodeType {
 
                     if (nodeParameters.actionType === 'checkChannelStatus') {
                         const result = await checkChannelStatus(
-                            credentials,
                             nodeParameters.channelId,
                         ).catch((e: any) => e);
                         returnData.push({ json: result || {} });
@@ -258,7 +256,7 @@ export class DiscordInteraction implements INodeType {
 
                     if (nodeParameters.actionType === 'getMessages') {
                         const result = await getMessagesHelper(
-                            credentials,
+                            credentials.token,
                             nodeParameters.channelId,
                             nodeParameters.getMessagesLimit,
                         ).catch((e: any) => e);
