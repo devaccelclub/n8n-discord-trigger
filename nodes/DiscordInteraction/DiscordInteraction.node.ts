@@ -42,6 +42,7 @@ export interface IDiscordInteractionMessageParameters {
     channelType: 'guild' | 'dm';  // NEW: destination selector
     channelId: string;             // guild channel ID (used when channelType = 'guild')
     dmChannelId: string;           // DM channel ID (used when channelType = 'dm')
+    effectiveChannelId: string;    // resolved channel ID sent to bot (set at runtime)
     embed: boolean;
     title: string;
     description: string;
@@ -193,6 +194,15 @@ export class DiscordInteraction implements INodeType {
             // Resolve the effective channel ID before sending to bot
             nodeParameters.effectiveChannelId = resolveChannelId(nodeParameters);
 
+            // Safe defaults for prepareMessage()
+            nodeParameters.mentionRoles = nodeParameters.mentionRoles || [];
+            nodeParameters.fields = nodeParameters.fields?.field
+                ? nodeParameters.fields
+                : { field: [] };
+            nodeParameters.files = nodeParameters.files?.file
+                ? nodeParameters.files
+                : { file: [] };
+
             const response: any = await new Promise((resolve) => {
                 ipc.config.retry = 1500;
                 configureIpc();
@@ -233,6 +243,17 @@ export class DiscordInteraction implements INodeType {
                 if (nodeParameters.type === 'message') {
                     nodeParameters.effectiveChannelId = resolveChannelId(nodeParameters);
                 }
+
+                // Ensure array/collection fields always have safe defaults so
+                // prepareMessage() in bot.ts never calls .forEach() on undefined.
+                // mentionRoles is hidden in DM mode so arrives as undefined.
+                nodeParameters.mentionRoles = nodeParameters.mentionRoles || [];
+                nodeParameters.fields = nodeParameters.fields?.field
+                    ? nodeParameters.fields
+                    : { field: [] };
+                nodeParameters.files = nodeParameters.files?.file
+                    ? nodeParameters.files
+                    : { file: [] };
 
                 // Handle helper-based actions (toggleChannelStatus, checkChannelStatus, getMessages)
                 // that bypass IPC and call the Discord API directly via helper functions.
@@ -276,7 +297,8 @@ export class DiscordInteraction implements INodeType {
                     const res: any = await new Promise((resolve, reject) => {
                         const timeout = setTimeout(() => {
                             console.log('IPC timeout after 30 seconds');
-                            ipc.disconnect('bot');
+                            // NOTE: do NOT call ipc.disconnect('bot') here — the trigger nodes
+                            // share this socket and disconnecting would kill their listeners
                             reject(new Error('IPC timeout after 30 seconds'));
                         }, 30000);
 
@@ -294,17 +316,15 @@ export class DiscordInteraction implements INodeType {
                                     callbackReceived = true;
                                     clearTimeout(timeout);
                                     console.log('Received callback:', type, data);
-                                    ipc.disconnect('bot');
+                                    // NOTE: do NOT disconnect — shared socket with trigger nodes
                                     resolve(data);
                                 }
                             });
 
-                            // Wait for connection to be established
-                            ipc.of.bot.on('connect', () => {
-                                console.log('Connected to bot IPC, emitting event:', type, nodeParameters);
-                                // Now send the event
-                                ipc.of.bot.emit(type, {token: credentials.token, nodeParameters: nodeParameters});
-                            });
+                            // Emit directly in connectTo callback (not inside 'connect' event)
+                            // to avoid race condition where 'connect' never fires on reused sockets
+                            console.log('Connected to bot IPC, emitting event:', type, nodeParameters);
+                            ipc.of.bot.emit(type, {token: credentials.token, nodeParameters: nodeParameters});
 
                             ipc.of.bot.on('disconnect', () => {
                                 if (!callbackReceived) {
@@ -316,7 +336,7 @@ export class DiscordInteraction implements INodeType {
                         });
                     }).catch((e) => {
                         console.log('IPC Error:', e);
-                        ipc.disconnect('bot');
+                        // NOTE: do NOT disconnect — shared socket with trigger nodes
                         return null;
                     });
 

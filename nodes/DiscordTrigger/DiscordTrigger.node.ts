@@ -125,8 +125,10 @@ export class DiscordTrigger implements INodeType {
         if (nodeListeners.has(nodeId)) {
             console.log(`Removing stale IPC listeners for node ${nodeId} before re-registering`);
             const stale = nodeListeners.get(nodeId)!;
-            for (const [event, handler] of Object.entries(stale)) {
-                ipc.of.bot.off(event, handler);
+            if (ipc.of.bot?.off) {
+                for (const [event, handler] of Object.entries(stale)) {
+                    ipc.of.bot.off(event, handler);
+                }
             }
             nodeListeners.delete(nodeId);
         }
@@ -285,8 +287,10 @@ export class DiscordTrigger implements INodeType {
                 // Remove only this node's IPC listeners — other nodes are unaffected
                 const handlers = nodeListeners.get(nodeId);
                 if (handlers) {
-                    for (const [event, handler] of Object.entries(handlers)) {
-                        ipc.of.bot.off(event, handler);
+                    if (ipc.of.bot?.off) {
+                        for (const [event, handler] of Object.entries(handlers)) {
+                            ipc.of.bot.off(event, handler);
+                        }
                     }
                     nodeListeners.delete(nodeId);
                     console.log(`Removed IPC listeners for node ${nodeId}. Remaining active nodes: ${nodeListeners.size}`);
