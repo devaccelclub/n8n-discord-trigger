@@ -1,6 +1,7 @@
 import ipc from 'node-ipc';
 import { INodePropertyOptions } from 'n8n-workflow';
 import axios from "axios";
+import { debugLog } from './logger';
 
 export interface ICredentials {
     clientId: string;
@@ -372,7 +373,7 @@ export const checkChannelStatus = (channelId: string): Promise<{ isDisabled: boo
 };
 
 // Get messages from channel
-export const getMessages = (token: string, channelId: string, limit: number = 10): Promise<any> => {
+export const getMessages = (token: string, channelId: string, limit: number = 10, debug?: boolean): Promise<any> => {
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
             console.log('getMessages timeout after 30 seconds');
@@ -383,10 +384,10 @@ export const getMessages = (token: string, channelId: string, limit: number = 10
         configureIpc();
 
         ipc.connectTo('bot', () => {
-            console.log('Connected to bot for getMessages, emitting send:action');
+            debugLog(debug, 'Connected to bot for getMessages, emitting send:action');
 
             ipc.of.bot.on('callback:send:action', (data: any) => {
-                console.log('Received callback:send:action', data);
+                debugLog(debug, 'Received callback:send:action', data);
                 clearTimeout(timeout);
                 resolve(data);
             });
@@ -412,7 +413,7 @@ export const ipcRequest = (type: string, parameters: any): Promise<any> => {
 
         ipc.connectTo('bot', () => {
             ipc.of.bot.on(`callback:${type}`, (data: any) => {
-                console.log("response fired", data);
+                debugLog(false, "response fired", data);
                 resolve(data);
             });
 

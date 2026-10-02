@@ -80,6 +80,10 @@ For more help on setting up n8n workflows, check the [Try it out documentation](
 
 ## Version history
 
+See [CHANGELOG.md](CHANGELOG.md) for details from v0.19.1 onwards.
+
+- **v0.19.2**: Debug output (including message contents) is off by default. Turn it on per node with the new "Debug Logging" option, or for everything with `DISCORD_TRIGGER_DEBUG=true`.
+- **v0.19.1**: Security fixes - Remove process-exiting crash handlers, stop file attachments from reading local files, stop logging the bot token. Adds DM sending, IPC fixes and a safer bot startup lock from this fork. Based on v0.11.6 rather than upstream v0.19.0 (see CHANGELOG.md). Voice recording does not work in this release.
 - **v0.11.6**: Critical fix - Enhance UDP IP discovery handling for voice connections. Add multiple fallback methods including manual IP discovery, forced Ready state transition, and automatic reconnection to resolve voice channel connection issues.
 - **v0.11.0**: Major update - Add Discord Voice Trigger node with voice recording, multi-format audio support, transcription-ready architecture, and global mutex/singleton system to prevent duplicate bot instances.
 - **v0.10.12**: Add global mutex/singleton pattern to prevent duplicate bot instances and event listeners on restart.

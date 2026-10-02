@@ -18,6 +18,7 @@ import {
     getCategories as getCategoriesHelper,
 } from '../helper';
 import settings from '../settings';
+import { debugLog } from '../logger';
 
 // Configure IPC for cross-platform compatibility
 function configureIpc() {
@@ -118,12 +119,13 @@ export class DiscordTrigger implements INodeType {
         await connection(credentials).catch((e) => e);
 
         const nodeId = this.getNode().id;
+        const debugLogging = !!(this.getNodeParameter('additionalFields', {}) as { debugLogging?: boolean }).debugLogging;
 
         // If this node was previously activated (e.g. workflow edited and re-saved),
         // remove its old listeners before registering new ones. This prevents
         // duplicate firings when the same nodeId is activated more than once.
         if (nodeListeners.has(nodeId)) {
-            console.log(`Removing stale IPC listeners for node ${nodeId} before re-registering`);
+            debugLog(debugLogging, `Removing stale IPC listeners for node ${nodeId} before re-registering`);
             const stale = nodeListeners.get(nodeId)!;
             if (ipc.of.bot?.off) {
                 for (const [event, handler] of Object.entries(stale)) {
@@ -135,7 +137,7 @@ export class DiscordTrigger implements INodeType {
 
         configureIpc();
         ipc.connectTo('bot', () => {
-            console.log('Connected to IPC server');
+            debugLog(debugLogging, 'Connected to IPC server');
 
             const parameters: any = {};
             Object.keys(this.getNode().parameters).forEach((key) => {
@@ -157,7 +159,7 @@ export class DiscordTrigger implements INodeType {
 
             const onMessageCreate = ({ message, author, guild, nodeId: eventNodeId, messageReference, attachments, referenceAuthor, memberRoles }: any) => {
                 if (nodeId !== eventNodeId) return;
-                console.log("received messageCreate event", message.id);
+                debugLog(debugLogging, "received messageCreate event", message.id);
 
                 const messageCreateOptions: any = {
                     id: message.id,
@@ -282,7 +284,7 @@ export class DiscordTrigger implements INodeType {
         // Return the cleanup function
         return {
             closeFunction: async () => {
-                console.log(`Removing trigger node ${nodeId}`);
+                debugLog(debugLogging, `Removing trigger node ${nodeId}`);
 
                 // Remove only this node's IPC listeners — other nodes are unaffected
                 const handlers = nodeListeners.get(nodeId);
@@ -293,7 +295,7 @@ export class DiscordTrigger implements INodeType {
                         }
                     }
                     nodeListeners.delete(nodeId);
-                    console.log(`Removed IPC listeners for node ${nodeId}. Remaining active nodes: ${nodeListeners.size}`);
+                    debugLog(debugLogging, `Removed IPC listeners for node ${nodeId}. Remaining active nodes: ${nodeListeners.size}`);
                 }
 
                 delete settings.triggerNodes[nodeId];
@@ -308,7 +310,7 @@ export class DiscordTrigger implements INodeType {
                 // 1. Other trigger/action nodes might still need the bot IPC server
                 // 2. The bot process should keep running for action nodes
                 // 3. IPC disconnect would break any in-flight action requests
-                console.log('Trigger node removed, keeping bot IPC server running for other nodes');
+                debugLog(debugLogging, 'Trigger node removed, keeping bot IPC server running for other nodes');
             },
         };
     }

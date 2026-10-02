@@ -283,6 +283,13 @@ export const options: INodeProperties[] = [
         description: 'After triggering workflow, wait X seconds before allowing same user in same channel to trigger again. Prevents multiple parallel executions. Messages during cooldown are queued and sent after cooldown expires. Set to 0 to disable.',
         placeholder: '60',
       },
+      {
+        displayName: 'Debug Logging',
+        name: 'debugLogging',
+        type: 'boolean',
+        default: false,
+        description: 'Whether to write detailed logs to the n8n server log while this trigger is active, including the content of every message the bot receives. Turn on only while troubleshooting.',
+      },
     ],
   },
 ];

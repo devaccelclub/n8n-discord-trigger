@@ -9,3 +9,6 @@ yarn.lock
 .history
 package-lock.json
 pnpm-lock.yaml
+*.tgz
+.claude/
+

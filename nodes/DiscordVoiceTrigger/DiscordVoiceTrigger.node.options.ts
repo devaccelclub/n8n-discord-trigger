@@ -307,6 +307,13 @@ export const options: INodeProperties[] = [
         description: 'Path where recordings should be saved',
         placeholder: './recordings',
       },
+      {
+        displayName: 'Debug Logging',
+        name: 'debugLogging',
+        type: 'boolean',
+        default: false,
+        description: 'Whether to write detailed logs to the n8n server log while this trigger is active, including voice connection internals. Turn on only while troubleshooting.',
+      },
     ],
   },
 ];

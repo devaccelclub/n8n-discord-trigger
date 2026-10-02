@@ -29,8 +29,40 @@ import {
 import settings, { saveDisabledChannels } from './settings';
 import { IDiscordInteractionMessageParameters, IDiscordNodeActionParameters } from './DiscordInteraction/DiscordInteraction.node';
 import BotSingleton from './botSingleton';
+import { debugLog, isDebug } from './logger';
 
-export default async function () {
+// Debug switches for events that are not tied to a single node: on if any registered
+// node using that bot (or any voice trigger) has its "Debug Logging" option enabled.
+const triggerDebug = ( token: string ): boolean =>
+    Object.values( settings.triggerNodes[ token ] ?? {} ).some( ( p: any ) => p?.additionalFields?.debugLogging );
+const voiceDebug = (): boolean =>
+    Object.values( settings.voiceTriggerNodes ).some( ( p: any ) => p?.additionalOptions?.debugLogging );
+
+// Guards against starting a second IPC server inside this process. Set as soon as
+// the lock is acquired, before any awaits that could interleave with a retry.
+let ipcServerStarted = false;
+let lockRetryTimer: NodeJS.Timeout | null = null;
+let lockRetriesRemaining = 20;
+const LOCK_RETRY_INTERVAL_MS = 15000;
+
+// If another process holds the lock, re-check periodically: the holder may be gone
+// (or may never have been the bot at all), in which case we take over.
+function scheduleLockRetry( run: () => Promise<void> ) {
+    if ( ipcServerStarted || lockRetryTimer || lockRetriesRemaining <= 0 ) return;
+
+    lockRetriesRemaining--;
+    lockRetryTimer = setTimeout( () => {
+        lockRetryTimer = null;
+        run().catch( ( e ) => console.error( 'Error retrying Discord bot start:', e ) );
+    }, LOCK_RETRY_INTERVAL_MS );
+
+    // Do not keep the event loop alive just for the retry
+    if ( typeof lockRetryTimer.unref === 'function' ) lockRetryTimer.unref();
+}
+
+export default async function bot() {
+    if ( ipcServerStarted ) return;
+
     const botSingleton = BotSingleton.getInstance();
 
     // Try to acquire lock
@@ -38,8 +70,11 @@ export default async function () {
 
     if (!hasLock) {
         console.log('Discord bot is already running in another process, connecting to existing IPC server...');
+        scheduleLockRetry( bot );
         return;
     }
+
+    ipcServerStarted = true;
 
     console.log('Starting Discord bot with exclusive lock...');
 
@@ -63,7 +98,7 @@ export default async function () {
         // Check if client already exists
         const existingClient = botSingleton.getClient(token);
         if (existingClient) {
-            console.log(`Reusing existing Discord client for token ${token.substring(0, 10)}...`);
+            debugLog( false, `Reusing existing Discord client for token ${token.substring(0, 10)}...`);
             return existingClient;
         }
 
@@ -370,7 +405,7 @@ export default async function () {
         // whenever a message is created this listener is called
         const onMessageCreate = async ( message: Message ) => {
 
-            console.log( "message created", message.id, message.content );
+            debugLog( triggerDebug( token ), "message created", message.id, message.content );
 
             // Handle support commands (/support-close, /support-open) - Bot-only, no n8n trigger
             if ( message.content === '/support-close' || message.content === '/support-open' ) {
@@ -545,7 +580,7 @@ export default async function () {
 
                         // Helper: Emit with cooldown tracking
                         const emitMessage = ( socket: any, data: any ) => {
-                            console.log( `Emitting message from ${message.author.username}` );
+                            debugLog( parameters.additionalFields?.debugLogging, `Emitting message from ${message.author.username}` );
                             ipc.server.emit( socket, 'messageCreate', data );
                             settings.lastEmitTime.set( debounceKey, Date.now() );
                         };
@@ -566,7 +601,7 @@ export default async function () {
                                         settings.userLastMessages.delete( debounceKey );
                                     } else {
                                         // Still in cooldown, retry after remaining time
-                                        console.log( `Cooldown active for ${message.author.username}, retrying in ${cooldownCheck.remainingSeconds}s` );
+                                        debugLog( parameters.additionalFields?.debugLogging, `Cooldown active for ${message.author.username}, retrying in ${cooldownCheck.remainingSeconds}s` );
                                         setupTimer( cooldownCheck.remainingSeconds );
                                     }
                                 }
@@ -580,7 +615,7 @@ export default async function () {
                             // Clear existing timer if user sends another message
                             if ( settings.userMessageTimers.has( debounceKey ) ) {
                                 clearTimeout( settings.userMessageTimers.get( debounceKey ) );
-                                console.log( `Debounce: Clearing previous timer for ${message.author.username}` );
+                                debugLog( parameters.additionalFields?.debugLogging, `Debounce: Clearing previous timer for ${message.author.username}` );
                             }
 
                             // Store the latest message data
@@ -597,11 +632,11 @@ export default async function () {
 
                             if ( cooldownCheck.canEmit ) {
                                 // Cooldown passed or disabled, emit immediately
-                                console.log( "about to emit messageCreate", message.id );
+                                debugLog( parameters.additionalFields?.debugLogging, "about to emit messageCreate", message.id );
                                 emitMessage( parameters.socket, messageCreateOptions );
                             } else {
                                 // In cooldown, queue message with timer
-                                console.log( `Cooldown active for ${message.author.username}, queuing message for ${cooldownCheck.remainingSeconds}s` );
+                                debugLog( parameters.additionalFields?.debugLogging, `Cooldown active for ${message.author.username}, queuing message for ${cooldownCheck.remainingSeconds}s` );
 
                                 // Clear existing timer if any
                                 if ( settings.userMessageTimers.has( debounceKey ) ) {
@@ -630,7 +665,7 @@ export default async function () {
             try {
                 // Debug voice state update
                 if (newState.channelId !== oldState.channelId) {
-                    console.log(`Voice state update: ${newState.member?.user.username} - Channel: ${oldState.channelId} -> ${newState.channelId}`);
+                    debugLog( voiceDebug(), `Voice state update: ${newState.member?.user.username} - Channel: ${oldState.channelId} -> ${newState.channelId}`);
                 }
 
                 // Check if voiceTriggerNodes exists and has entries
@@ -721,16 +756,16 @@ export default async function () {
                         }
                     } else if ( voiceMode === 'voice-recording' && newState.channelId && !oldState.channelId ) {
                         // User joined a voice channel - start recording if configured
-                        console.log(`User ${newState.member?.user.username} joined voice channel ${newState.channel?.name}`);
+                        debugLog( parameters.additionalOptions?.debugLogging, `User ${newState.member?.user.username} joined voice channel ${newState.channel?.name}`);
                         const autoJoin = parameters.additionalOptions?.autoJoin !== false;
-                        console.log(`Auto-join is ${autoJoin ? 'enabled' : 'disabled'}`);
+                        debugLog( parameters.additionalOptions?.debugLogging, `Auto-join is ${autoJoin ? 'enabled' : 'disabled'}`);
                         if ( autoJoin && newState.channel ) {
-                            console.log(`Attempting to join voice channel and start recording...`);
+                            debugLog( parameters.additionalOptions?.debugLogging, `Attempting to join voice channel and start recording...`);
                             await handleVoiceRecording( newState, nodeId, parameters );
                         } else if (!autoJoin) {
-                            console.log(`Auto-join disabled, not joining voice channel`);
+                            debugLog( parameters.additionalOptions?.debugLogging, `Auto-join disabled, not joining voice channel`);
                         } else if (!newState.channel) {
-                            console.log(`No voice channel found in newState`);
+                            debugLog( parameters.additionalOptions?.debugLogging, `No voice channel found in newState`);
                         }
                     } else if ( voiceMode === 'voice-activity' ) {
                         // Handle voice activity detection
@@ -751,7 +786,7 @@ export default async function () {
                     return;
                 }
 
-                console.log(`handleVoiceRecording: Channel ${channel.name} (${channel.id}), Guild ${channel.guild.name} (${channel.guild.id})`);
+                debugLog( parameters.additionalOptions?.debugLogging, `handleVoiceRecording: Channel ${channel.name} (${channel.id}), Guild ${channel.guild.name} (${channel.guild.id})`);
 
                 const connectionKey = `${ voiceState.guild.id }:${ channel.id }`;
 
@@ -759,7 +794,7 @@ export default async function () {
                 let connection = settings.voiceConnections.get( connectionKey );
 
                 if ( !connection ) {
-                    console.log(`Creating new voice connection for ${connectionKey}`);
+                    debugLog( parameters.additionalOptions?.debugLogging, `Creating new voice connection for ${connectionKey}`);
 
                     // Check if we have necessary permissions
                     const botMember = channel.guild.members.me;
@@ -769,7 +804,7 @@ export default async function () {
                     }
 
                     const permissions = channel.permissionsFor(botMember);
-                    console.log('Checking bot permissions for voice channel...');
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Checking bot permissions for voice channel...');
                     if (!permissions?.has('Connect')) {
                         console.error('❌ Bot lacks CONNECT permission for voice channel!');
                         if (parameters.socket) {
@@ -784,18 +819,18 @@ export default async function () {
                         console.warn('⚠️ Bot lacks SPEAK permission - may not be able to play audio');
                     }
 
-                    console.log('✅ Bot has necessary permissions, joining voice channel...');
+                    debugLog( parameters.additionalOptions?.debugLogging, '✅ Bot has necessary permissions, joining voice channel...');
 
                     // Debug client and guild state
                     const client = settings.clientMap[parameters.token];
-                    console.log('Client ready state:', client?.isReady());
-                    console.log('Client user:', client?.user?.tag);
-                    console.log('Guild available:', channel.guild.available);
-                    console.log('Guild member count:', channel.guild.memberCount);
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Client ready state:', client?.isReady());
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Client user:', client?.user?.tag);
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Guild available:', channel.guild.available);
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Guild member count:', channel.guild.memberCount);
 
                     // Debug voice adapter
-                    console.log('Guild voice adapter creator exists:', !!channel.guild.voiceAdapterCreator);
-                    console.log('Bot user in guild:', channel.guild.members.me?.user.tag);
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Guild voice adapter creator exists:', !!channel.guild.voiceAdapterCreator);
+                    debugLog( parameters.additionalOptions?.debugLogging, 'Bot user in guild:', channel.guild.members.me?.user.tag);
 
                     // Create custom adapter with error handling and network configuration
                     const adapterCreator = channel.guild.voiceAdapterCreator;
@@ -808,21 +843,21 @@ export default async function () {
                             adapterCreator: adapterCreator,
                             selfDeaf: false,  // Bot can hear voice
                             selfMute: false,  // Bot can speak (for future TTS/audio playback)
-                            debug: true,      // Enable debug mode for more info
+                            debug: isDebug( parameters.additionalOptions?.debugLogging ), // emit 'debug' events only when debugging
                         } );
 
                         // Subscribe to state changes for debugging
                         connection.on('stateChange', (oldState: any, newState: any) => {
-                            console.log(`🔄 Voice connection state change: ${oldState.status} -> ${newState.status}`);
+                            debugLog( parameters.additionalOptions?.debugLogging, `🔄 Voice connection state change: ${oldState.status} -> ${newState.status}`);
 
                             // Log additional debug info based on state
                             if (newState.status === VoiceConnectionStatus.Connecting) {
-                                console.log('Attempting to establish voice connection...');
+                                debugLog( parameters.additionalOptions?.debugLogging, 'Attempting to establish voice connection...');
 
                                 // Check if stuck in IP discovery (code 2)
                                 if (newState.networking?.state?.code === 2) {
-                                    console.log('⚠️ Stuck in IP Discovery phase (code: 2)');
-                                    console.log('UDP socket info:', {
+                                    debugLog( parameters.additionalOptions?.debugLogging, '⚠️ Stuck in IP Discovery phase (code: 2)');
+                                    debugLog( parameters.additionalOptions?.debugLogging, 'UDP socket info:', {
                                         hasUdp: !!newState.networking?.state?.udp,
                                         ssrc: newState.networking?.state?.connectionData?.ssrc,
                                         ip: newState.networking?.state?.udp?.remote?.ip,
@@ -833,18 +868,18 @@ export default async function () {
                                     // Aggressive fix: Try multiple approaches to resolve UDP discovery
                                     setTimeout(() => {
                                         if (connection.state.status === VoiceConnectionStatus.Connecting) {
-                                            console.log('🔧 Attempting multiple fixes for UDP discovery...');
+                                            debugLog( parameters.additionalOptions?.debugLogging, '🔧 Attempting multiple fixes for UDP discovery...');
 
                                             const state = connection.state as any;
                                             const networking = state.networking;
 
                                             if (networking && state.networking?.state?.code === 2) {
-                                                console.log('Still stuck in code 2, applying fixes...');
+                                                debugLog( parameters.additionalOptions?.debugLogging, 'Still stuck in code 2, applying fixes...');
 
                                                 try {
                                                     // Method 1: Try to manually complete IP discovery
                                                     if (networking.state?.ws && networking.state?.connectionData) {
-                                                        console.log('Method 1: Manual IP discovery completion');
+                                                        debugLog( parameters.additionalOptions?.debugLogging, 'Method 1: Manual IP discovery completion');
 
                                                         // Get local IP (fallback to localhost if needed)
                                                         const localIp = networking.state?.udp?.local?.ip || '127.0.0.1';
@@ -864,7 +899,7 @@ export default async function () {
                                                                 }
                                                             };
 
-                                                            console.log('Sending manual discovery packet:', discoveryPacket);
+                                                            debugLog( parameters.additionalOptions?.debugLogging, 'Sending manual discovery packet:', discoveryPacket);
                                                             networking.state.ws.send(JSON.stringify(discoveryPacket));
                                                         }
                                                     }
@@ -872,7 +907,7 @@ export default async function () {
                                                     // Method 2: Force state transition after brief wait
                                                     setTimeout(() => {
                                                         if (connection.state.status === VoiceConnectionStatus.Connecting) {
-                                                            console.log('Method 2: Forcing Ready state transition');
+                                                            debugLog( parameters.additionalOptions?.debugLogging, 'Method 2: Forcing Ready state transition');
 
                                                             // Create a mock ready state
                                                             const mockReadyState = {
@@ -894,7 +929,7 @@ export default async function () {
 
                                                             // Emit Ready event to trigger recording setup
                                                             connection.emit(VoiceConnectionStatus.Ready, mockReadyState);
-                                                            console.log('✅ Forced Ready state with mock data!');
+                                                            debugLog( parameters.additionalOptions?.debugLogging, '✅ Forced Ready state with mock data!');
                                                         }
                                                     }, 1000);
 
@@ -902,7 +937,7 @@ export default async function () {
                                                     console.error('Failed to apply UDP discovery fixes:', err);
 
                                                     // Last resort: Reconnect
-                                                    console.log('Method 3: Attempting reconnection...');
+                                                    debugLog( parameters.additionalOptions?.debugLogging, 'Method 3: Attempting reconnection...');
                                                     connection.reconnect();
                                                 }
                                             }
@@ -910,16 +945,16 @@ export default async function () {
                                     }, 2500);
                                 }
                             } else if (newState.status === VoiceConnectionStatus.Signalling) {
-                                console.log('Signalling to Discord voice servers...');
+                                debugLog( parameters.additionalOptions?.debugLogging, 'Signalling to Discord voice servers...');
                             } else if (newState.status === VoiceConnectionStatus.Ready) {
-                                console.log('✅ Successfully connected to voice!');
-                                console.log('Voice server:', newState.networking?.state);
+                                debugLog( parameters.additionalOptions?.debugLogging, '✅ Successfully connected to voice!');
+                                debugLog( parameters.additionalOptions?.debugLogging, 'Voice server:', newState.networking?.state);
                             }
                         });
 
                         // Also log raw debug events
                         connection.on('debug', (message: string) => {
-                            console.log(`[VOICE DEBUG]: ${message}`);
+                            debugLog( parameters.additionalOptions?.debugLogging, `[VOICE DEBUG]: ${message}`);
                         });
 
                     } catch (error) {
@@ -939,33 +974,33 @@ export default async function () {
                     }
 
                     settings.voiceConnections.set( connectionKey, connection );
-                    console.log(`Voice connection created and stored`);
+                    debugLog( parameters.additionalOptions?.debugLogging, `Voice connection created and stored`);
 
                     // Handle connection state
                     connection.on( VoiceConnectionStatus.Ready, () => {
-                        console.log( `✅ Voice connection READY for channel: ${ channel.name }` );
-                        console.log( `Voice connection state: ${connection.state.status}` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `✅ Voice connection READY for channel: ${ channel.name }` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `Voice connection state: ${connection.state.status}` );
 
                         // Start recording
                         const receiver = connection.receiver;
-                        console.log( `Voice receiver created, setting up speaking listeners...` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `Voice receiver created, setting up speaking listeners...` );
 
                         const audioFormat = parameters.recordingOptions?.audioFormat || 'ogg';
                         const maxDuration = ( parameters.recordingOptions?.maxDuration || 60 ) * 1000;
                         const silenceTimeout = ( parameters.recordingOptions?.silenceTimeout || 2 ) * 1000;
 
-                        console.log( `Recording config - Format: ${audioFormat}, Max Duration: ${maxDuration}ms, Silence Timeout: ${silenceTimeout}ms` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `Recording config - Format: ${audioFormat}, Max Duration: ${maxDuration}ms, Silence Timeout: ${silenceTimeout}ms` );
 
                         // Debug: Check if receiver.speaking exists
                         if (!receiver.speaking) {
                             console.error( '❌ ERROR: receiver.speaking is undefined!' );
                         } else {
-                            console.log( '✅ receiver.speaking is available, adding listeners...' );
+                            debugLog( parameters.additionalOptions?.debugLogging, '✅ receiver.speaking is available, adding listeners...' );
                         }
 
                         // Listen for speaking events
                         receiver.speaking.on( 'start', ( userId: string ) => {
-                            console.log( `🎤 Speaking START event received for user ID: ${userId}` );
+                            debugLog( parameters.additionalOptions?.debugLogging, `🎤 Speaking START event received for user ID: ${userId}` );
 
                             const member = channel.guild.members.cache.get( userId );
                             if ( !member ) {
@@ -973,10 +1008,10 @@ export default async function () {
                                 return;
                             }
 
-                            console.log( `${ member.user.username } (${userId}) started speaking` );
+                            debugLog( parameters.additionalOptions?.debugLogging, `${ member.user.username } (${userId}) started speaking` );
 
                             // Create audio stream for user
-                            console.log( `Subscribing to audio stream for ${member.user.username}...` );
+                            debugLog( parameters.additionalOptions?.debugLogging, `Subscribing to audio stream for ${member.user.username}...` );
                             const audioStream = receiver.subscribe( userId, {
                                 end: {
                                     behavior: EndBehaviorType.AfterSilence,
@@ -989,37 +1024,37 @@ export default async function () {
                             let recordingStartTime = Date.now();
                             let dataReceived = false;
 
-                            console.log( `📼 Started recording for ${member.user.username} at ${new Date(recordingStartTime).toISOString()}` );
+                            debugLog( parameters.additionalOptions?.debugLogging, `📼 Started recording for ${member.user.username} at ${new Date(recordingStartTime).toISOString()}` );
 
                             audioStream.on( 'data', ( chunk: Buffer ) => {
                                 // Check max duration
                                 if ( Date.now() - recordingStartTime < maxDuration ) {
                                     chunks.push( chunk );
                                     if (!dataReceived) {
-                                        console.log( `🔊 First audio data received from ${member.user.username}, chunk size: ${chunk.length} bytes` );
+                                        debugLog( parameters.additionalOptions?.debugLogging, `🔊 First audio data received from ${member.user.username}, chunk size: ${chunk.length} bytes` );
                                         dataReceived = true;
                                     }
                                 }
                             } );
 
                             audioStream.on( 'end', async () => {
-                                console.log( `🔴 ${ member.user.username } stopped speaking` );
-                                console.log( `Total chunks received: ${chunks.length}` );
+                                debugLog( parameters.additionalOptions?.debugLogging, `🔴 ${ member.user.username } stopped speaking` );
+                                debugLog( parameters.additionalOptions?.debugLogging, `Total chunks received: ${chunks.length}` );
 
                                 // Combine chunks
                                 const buffer = Buffer.concat( chunks );
                                 const duration = ( Date.now() - recordingStartTime ) / 1000;
 
-                                console.log( `Recording stats - Duration: ${duration}s, Buffer size: ${buffer.length} bytes` );
+                                debugLog( parameters.additionalOptions?.debugLogging, `Recording stats - Duration: ${duration}s, Buffer size: ${buffer.length} bytes` );
 
                                 // Check minimum speaking duration
                                 const minDuration = ( parameters.recordingOptions?.minSpeakingDuration || 100 ) / 1000;
                                 if ( duration < minDuration ) {
-                                    console.log( `⏭️ Recording too short (${duration}s < ${minDuration}s), skipping...` );
+                                    debugLog( parameters.additionalOptions?.debugLogging, `⏭️ Recording too short (${duration}s < ${minDuration}s), skipping...` );
                                     return;
                                 }
 
-                                console.log( `✅ Recording meets minimum duration, processing...` );
+                                debugLog( parameters.additionalOptions?.debugLogging, `✅ Recording meets minimum duration, processing...` );
 
                                 // Process recording
                                 const recordingData = {
@@ -1048,13 +1083,13 @@ export default async function () {
                                 if ( parameters.transcription?.enabled ) {
                                     // Transcription would be handled here
                                     // This would integrate with external services
-                                    console.log( 'Transcription requested but not implemented yet' );
+                                    debugLog( parameters.additionalOptions?.debugLogging, 'Transcription requested but not implemented yet' );
                                 }
 
                                 // Emit recording event
-                                console.log( `📡 Emitting voice recording to workflow, socket: ${parameters.socket ? 'exists' : 'missing'}` );
+                                debugLog( parameters.additionalOptions?.debugLogging, `📡 Emitting voice recording to workflow, socket: ${parameters.socket ? 'exists' : 'missing'}` );
                                 if ( parameters.socket ) {
-                                    console.log( `Sending voiceRecording event to node ${nodeId}` );
+                                    debugLog( parameters.additionalOptions?.debugLogging, `Sending voiceRecording event to node ${nodeId}` );
                                     ipc.server.emit( parameters.socket, 'voiceRecording', {
                                         recording: recordingData,
                                         user: {
@@ -1089,20 +1124,20 @@ export default async function () {
                     } );
 
                     connection.on( VoiceConnectionStatus.Signalling, () => {
-                        console.log( `📶 Voice connection signalling for channel: ${ channel.name }` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `📶 Voice connection signalling for channel: ${ channel.name }` );
                     } );
 
                     connection.on( VoiceConnectionStatus.Connecting, () => {
-                        console.log( `🔄 Voice connection connecting to channel: ${ channel.name }` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `🔄 Voice connection connecting to channel: ${ channel.name }` );
                     } );
 
                     connection.on( VoiceConnectionStatus.Disconnected, async () => {
-                        console.log( `❌ Disconnected from voice channel: ${ channel.name }` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `❌ Disconnected from voice channel: ${ channel.name }` );
                         settings.voiceConnections.delete( connectionKey );
 
                         // Try to reconnect
                         try {
-                            console.log( `Attempting to reconnect to voice channel...` );
+                            debugLog( parameters.additionalOptions?.debugLogging, `Attempting to reconnect to voice channel...` );
                             await Promise.race([
                                 connection.reconnect(),
                                 new Promise((_, reject) =>
@@ -1116,7 +1151,7 @@ export default async function () {
                     } );
 
                     connection.on( VoiceConnectionStatus.Destroyed, () => {
-                        console.log( `💥 Voice connection destroyed for channel: ${ channel.name }` );
+                        debugLog( parameters.additionalOptions?.debugLogging, `💥 Voice connection destroyed for channel: ${ channel.name }` );
                         settings.voiceConnections.delete( connectionKey );
                     } );
 
@@ -1173,7 +1208,7 @@ export default async function () {
                         if ( members.size === 0 && connection ) {
                             connection.destroy();
                             settings.voiceConnections.delete( connectionKey );
-                            console.log( `Left empty voice channel: ${ channel.name }` );
+                            debugLog( parameters.additionalOptions?.debugLogging, `Left empty voice channel: ${ channel.name }` );
                         }
                     }, 5000 );
                 }
@@ -1197,9 +1232,9 @@ export default async function () {
             if (!botSingleton.hasEventListener(messageListenerKey, onMessageCreate)) {
                 client.on( 'messageCreate', onMessageCreate );
                 botSingleton.addEventListener(messageListenerKey, onMessageCreate);
-                console.log(`Added messageCreate listener for token ${token.substring(0, 10)}...`);
+                debugLog( false, `Added messageCreate listener for token ${token.substring(0, 10)}...`);
             } else {
-                console.log(`MessageCreate listener already exists for token ${token.substring(0, 10)}...`);
+                debugLog( false, `MessageCreate listener already exists for token ${token.substring(0, 10)}...`);
             }
 
             // Add voice state update listener
@@ -1207,9 +1242,9 @@ export default async function () {
             if (!botSingleton.hasEventListener(voiceListenerKey, voiceStateUpdateHandler)) {
                 client.on( 'voiceStateUpdate', voiceStateUpdateHandler );
                 botSingleton.addEventListener(voiceListenerKey, voiceStateUpdateHandler);
-                console.log(`Added voiceStateUpdate listener for token ${token.substring(0, 10)}...`);
+                debugLog( false, `Added voiceStateUpdate listener for token ${token.substring(0, 10)}...`);
             } else {
-                console.log(`VoiceStateUpdate listener already exists for token ${token.substring(0, 10)}...`);
+                debugLog( false, `VoiceStateUpdate listener already exists for token ${token.substring(0, 10)}...`);
             }
 
             if ( client.user ) {
@@ -1242,7 +1277,7 @@ export default async function () {
 
         ipc.server.on( 'triggerNodeRemoved', ( data: { nodeId: string }, socket: any ) => {
             // remove the specific node parameters because the node was removed
-            console.log( `Removing trigger node: ${ data.nodeId }` );
+            debugLog( false, `Removing trigger node: ${ data.nodeId }` );
             for ( const token in settings.triggerNodes ) {
                 delete settings.triggerNodes[ token ][ data.nodeId ];
             }
@@ -1250,7 +1285,7 @@ export default async function () {
 
         // Voice trigger node registration
         ipc.server.on( 'voiceTriggerNodeRegistered', ( data: any, socket: any ) => {
-            console.log( `Voice trigger node registered: ${ data.nodeId }` );
+            debugLog( false, `Voice trigger node registered: ${ data.nodeId }` );
             settings.voiceTriggerNodes[ data.nodeId ] = {
                 ...data.parameters,
                 socket: socket,
@@ -1259,7 +1294,7 @@ export default async function () {
         } );
 
         ipc.server.on( 'voiceTriggerNodeRemoved', ( data: { nodeId: string }, socket: any ) => {
-            console.log( `Removing voice trigger node: ${ data.nodeId }` );
+            debugLog( false, `Removing voice trigger node: ${ data.nodeId }` );
             delete settings.voiceTriggerNodes[ data.nodeId ];
 
             // Clean up any active voice connections for this node
@@ -1345,7 +1380,7 @@ export default async function () {
                     }
                 }
 
-                console.log( channelsList );
+                debugLog( false, channelsList );
 
                 ipc.server.emit( socket, 'list:channels', channelsList );
             } catch ( e ) {
@@ -1456,14 +1491,14 @@ export default async function () {
                 } );
 
                 client.on( 'error', ( err ) => {
-                    console.error( `Client error for ${ token }`, err );
+                    console.error( `Client error for client ${ clientId }`, err );
                     settings.loginQueue[ token ] = false;
                     ipc.server.emit( socket, 'credentials', 'error' );
                 } );
 
             } catch ( err ) {
                 settings.loginQueue[ token ] = false;
-                console.error( `Failed to login client for ${ token }`, err );
+                console.error( `Failed to login client ${ clientId }`, err );
                 ipc.server.emit( socket, 'credentials', 'error' );
             }
         } );
@@ -1471,13 +1506,13 @@ export default async function () {
         ipc.server.on( 'send:message', async ( data: { token: string, nodeParameters: IDiscordInteractionMessageParameters }, socket: any ) => {
             try {
  
-                console.log( `send message for ${ data.token }` );
- 
                 const client = settings.clientMap[ data.token ];
+
+                debugLog( data.nodeParameters?.options?.debugLogging, `send message for client ${ client?.user?.id ?? 'unknown' }` );
  
                 const nodeParameters = data.nodeParameters;
                 if ( !client || !settings.readyClients[ data.token ] ) return;
-                console.log( "client ready", client.user?.tag );
+                debugLog( data.nodeParameters?.options?.debugLogging, "client ready", client.user?.tag );
  
                 // Resolve the target channel ID.
                 // effectiveChannelId is set by DiscordInteraction.node.ts and already
@@ -1527,7 +1562,7 @@ export default async function () {
 
         ipc.server.on( 'send:action', async ( data: { token: string, nodeParameters: IDiscordNodeActionParameters }, socket: any ) => {
             try {
-                console.log( 'Received send:action:', data.nodeParameters.actionType );
+                debugLog( data.nodeParameters?.options?.debugLogging, 'Received send:action:', data.nodeParameters.actionType );
                 const client = settings.clientMap[ data.token ];
                 const nodeParameters = data.nodeParameters;
                 if ( !client || !settings.readyClients[ data.token ] ) {
@@ -1538,7 +1573,7 @@ export default async function () {
                 const performAction = async (): Promise<string | void> => {
                     // get messages from channel
                     if ( nodeParameters.actionType === 'getMessages' ) {
-                        console.log( 'Processing getMessages action' );
+                        debugLog( data.nodeParameters?.options?.debugLogging, 'Processing getMessages action' );
                         const channel = <TextChannel> client.channels.cache.get( nodeParameters.channelId );
                         if ( !channel || !channel.isTextBased() ) {
                             console.log( 'Channel not found or not text-based' );
@@ -1547,7 +1582,7 @@ export default async function () {
                         }
 
                         const limit = ( nodeParameters as any ).getMessagesLimit || 10;
-                        console.log( `Fetching ${limit} messages from channel ${nodeParameters.channelId}` );
+                        debugLog( data.nodeParameters?.options?.debugLogging, `Fetching ${limit} messages from channel ${nodeParameters.channelId}` );
                         const messages = await channel.messages.fetch( { limit } );
 
                         const messagesArray = Array.from( messages.values() ).map( ( msg: Message ) => ( {
@@ -1591,12 +1626,12 @@ export default async function () {
                             } ) ) : [],
                         } ) );
 
-                        console.log( `Emitting callback with ${messagesArray.length} messages` );
+                        debugLog( data.nodeParameters?.options?.debugLogging, `Emitting callback with ${messagesArray.length} messages` );
                         ipc.server.emit( socket, `callback:send:action`, {
                             action: 'getMessages',
                             messages: messagesArray,
                         } );
-                        console.log( 'Callback emitted successfully' );
+                        debugLog( data.nodeParameters?.options?.debugLogging, 'Callback emitted successfully' );
                         return 'handled';
                     }
 
@@ -1608,7 +1643,7 @@ export default async function () {
                             return;
                         }
 
-                        await channel.bulkDelete( nodeParameters.removeMessagesNumber ).catch( ( e: any ) => console.log( `${ e }`, client ) );
+                        await channel.bulkDelete( nodeParameters.removeMessagesNumber ).catch( ( e: any ) => console.log( `${ e }` ) );
                     }
 
                     // add or remove roles
@@ -1641,7 +1676,7 @@ export default async function () {
                     return;
                 }
 
-                console.log( "action done" );
+                debugLog( data.nodeParameters?.options?.debugLogging, "action done" );
 
                 ipc.server.emit( socket, `callback:send:action`, {
                     action: nodeParameters.actionType,
@@ -1656,9 +1691,9 @@ export default async function () {
 
         ipc.server.on( 'send:confirmation', async ( data: { token: string, nodeParameters: any }, socket: any ) => {
             try {
-                console.log( `send confirmation for ${ data.token }`, data.nodeParameters );
-
                 const client = settings.clientMap[ data.token ];
+
+                debugLog( data.nodeParameters?.options?.debugLogging, `send confirmation for client ${ client?.user?.id ?? 'unknown' }`, data.nodeParameters );
                 const nodeParameters = data.nodeParameters;
                 if ( !client || !settings.readyClients[ data.token ] ) return;
 
@@ -1673,9 +1708,12 @@ export default async function () {
                     collectorTimeout = parseInt( nodeParameters.additionalConfirmationFields.timeout ) * 1000;
                 }
 
-                // prepare embed messages, if they are set by the client
+                // prepare embed messages, if they are set by the client.
+                // Built outside the Promise executor so an invalid parameter (e.g. a rejected
+                // file URL) lands in the catch below instead of leaving the promise pending.
+                const preparedMessage = prepareMessage( nodeParameters );
+
                 const confirmed = await new Promise<Boolean | null>( async resolve => {
-                    const preparedMessage = prepareMessage( nodeParameters );
                     // @ts-ignore
                     prepareMessage.ephemeral = true;
 
@@ -1702,10 +1740,12 @@ export default async function () {
                     } );
 
                     collector.on( "end", ( collected ) => {
+                        // Must not throw: on timeout discord.js emits 'end' from a timer, so an
+                        // exception here is uncaught. An unanswered prompt resolves as "no response".
                         if ( !isResolved )
                             resolve( null );
-                        confirmationMessage?.delete();
-                        throw Error( "Confirmed message could not be resolved" );
+                        // Already deleted if a button was clicked; ignore "Unknown Message"
+                        confirmationMessage?.delete().catch( () => {} );
                     } );
 
                     const yesLabel = nodeParameters.additionalConfirmationFields.yesLabel || 'Yes';
@@ -1724,7 +1764,7 @@ export default async function () {
                     confirmationMessage = await channel.send( preparedMessage );
                 } );
 
-                console.log( "sending callback to node ", confirmed );
+                debugLog( data.nodeParameters?.options?.debugLogging, "sending callback to node ", confirmed );
                 ipc.server.emit( socket, 'callback:send:confirmation', { confirmed: confirmed, success: true } );
             } catch ( e ) {
                 console.log( `${ e }` );
@@ -1809,7 +1849,7 @@ export default async function () {
         // Destroy all Discord clients
         for ( const token in settings.clientMap ) {
             try {
-                console.log( `Destroying client for token ${token}` );
+                console.log( `Destroying client ${ settings.clientMap[ token ].user?.id ?? 'unknown' }` );
                 settings.clientMap[ token ].removeAllListeners();
                 settings.clientMap[ token ].destroy();
             } catch ( e ) {
@@ -1837,11 +1877,9 @@ export default async function () {
         cleanup();
         process.exit( 0 );
     } );
-    process.on( 'uncaughtException', ( err ) => {
-        console.error( 'Uncaught exception:', err );
-        cleanup();
-        process.exit( 1 );
-    } );
+    // No 'uncaughtException' handler here: this code runs inside the n8n process, and n8n
+    // already reports uncaught exceptions without exiting. Exiting here would let any stray
+    // error (in this package or anywhere else in n8n) take down the whole instance.
 }
 
 function prepareMessage ( nodeParameters: any ): any {
@@ -1932,14 +1970,20 @@ function prepareMessage ( nodeParameters: any ): any {
     if ( nodeParameters.content ) content += nodeParameters.content;
     if ( mentions ) content += mentions;
 
-    // if there are files, add them aswell
+    // if there are files, add them aswell.
+    // Only https:// URLs and data: URIs are accepted: discord.js treats any other string as a
+    // local file path and uploads that file, which would expose files like ~/.n8n/config.
     let files: any[] = [];
     if ( nodeParameters.files?.file ) {
         files = nodeParameters.files?.file.map( ( file: { url: string } ) => {
-            if ( file.url.match( /^data:/ ) ) {
-                return Buffer.from( file.url.split( ',' )[ 1 ], 'base64' );
+            const url = typeof file.url === 'string' ? file.url : '';
+            if ( url.match( /^data:/ ) ) {
+                return Buffer.from( url.split( ',' )[ 1 ], 'base64' );
             }
-            return file.url;
+            if ( /^https:\/\//.test( url ) ) {
+                return url;
+            }
+            throw new Error( 'Unsupported file URL: only https:// URLs and data: URIs are allowed' );
         } );
     }
     if ( embedFiles.length ) files = files.concat( embedFiles );

@@ -571,4 +571,20 @@ export const options: INodeProperties[] = [
             },
         ],
     },
+    {
+        displayName: 'Options',
+        name: 'options',
+        type: 'collection',
+        default: {},
+        placeholder: 'Add Option',
+        options: [
+            {
+                displayName: 'Debug Logging',
+                name: 'debugLogging',
+                type: 'boolean',
+                default: false,
+                description: 'Whether to write detailed logs for this node to the n8n server log, including message contents. Turn on only while troubleshooting.',
+            },
+        ],
+    },
 ];

@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-discord-trigger-new",
-  "version": "0.11.6",
+  "version": "0.19.2",
   "description": "A node that triggers a workflow whenever a message from discord is sent.",
   "keywords": [
     "n8n",
@@ -36,7 +36,8 @@
     "prepublishOnly": "pnpm build && pnpm lint -c .eslintrc.prepublish.js nodes credentials package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
@@ -64,7 +65,6 @@
     "n8n-workflow": "*"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.0",
     "@types/node-ipc": "^9.2.3",
     "axios": "^1.13.1",

@@ -20,6 +20,7 @@ import {
     checkChannelStatus,
     getMessages as getMessagesHelper,
 } from '../helper';
+import { debugLog } from '../logger';
 
 // Configure IPC for cross-platform compatibility
 function configureIpc() {
@@ -70,6 +71,9 @@ export interface IDiscordInteractionMessageParameters {
             url: string;
         }[];
     };
+    options?: {
+        debugLogging?: boolean;
+    };
 }
 
 
@@ -85,6 +89,9 @@ export interface IDiscordNodeActionParameters {
     removeMessagesNumber: number;
     userId?: string;
     roleUpdateIds?: string[] | string;
+    options?: {
+        debugLogging?: boolean;
+    };
 }
 
 
@@ -130,7 +137,7 @@ export class DiscordInteraction implements INodeType {
             async getChannels(): Promise<INodePropertyOptions[]> {
                 // @ts-ignore
                 const selectedGuilds = this.getNodeParameter('guildIds', []);
-                console.log("selectedGuilds", selectedGuilds);
+                debugLog(false, "selectedGuilds", selectedGuilds);
 
                 if (!selectedGuilds.length) {
                     // @ts-ignore
@@ -142,7 +149,7 @@ export class DiscordInteraction implements INodeType {
             async getRoles(): Promise<INodePropertyOptions[]> {
                 // @ts-ignore
                 const selectedGuilds = this.getNodeParameter('guildIds', []);
-                console.log("selectedGuilds", selectedGuilds);
+                debugLog(false, "selectedGuilds", selectedGuilds);
 
                 if (!selectedGuilds.length) {
                     // @ts-ignore
@@ -209,7 +216,7 @@ export class DiscordInteraction implements INodeType {
                 ipc.connectTo('bot', () => {
                     const type = `send:confirmation`;
                     ipc.of.bot.on(`callback:send:confirmation`, (data: any) => {
-                        console.log("user decided", data);
+                        debugLog(nodeParameters.options?.debugLogging, "user decided", data);
                         resolve(data);
                     });
 
@@ -217,7 +224,7 @@ export class DiscordInteraction implements INodeType {
                     ipc.of.bot.emit(type, {nodeParameters: nodeParameters, token: credentials.token});
                 });
             });
-            console.log(response);
+            debugLog(nodeParameters.options?.debugLogging, 'Confirmation response:', response);
 
             if (response.confirmed === null)
                 returnData[2] = this.getInputData();
@@ -280,6 +287,7 @@ export class DiscordInteraction implements INodeType {
                             credentials.token,
                             nodeParameters.channelId,
                             nodeParameters.getMessagesLimit,
+                            nodeParameters.options?.debugLogging,
                         ).catch((e: any) => e);
                         if (result?.messages) {
                             result.messages.forEach((message: any) => {
@@ -315,7 +323,7 @@ export class DiscordInteraction implements INodeType {
                                 if (!callbackReceived) {
                                     callbackReceived = true;
                                     clearTimeout(timeout);
-                                    console.log('Received callback:', type, data);
+                                    debugLog(nodeParameters.options?.debugLogging, 'Received callback:', type, data);
                                     // NOTE: do NOT disconnect — shared socket with trigger nodes
                                     resolve(data);
                                 }
@@ -323,7 +331,7 @@ export class DiscordInteraction implements INodeType {
 
                             // Emit directly in connectTo callback (not inside 'connect' event)
                             // to avoid race condition where 'connect' never fires on reused sockets
-                            console.log('Connected to bot IPC, emitting event:', type, nodeParameters);
+                            debugLog(nodeParameters.options?.debugLogging, 'Connected to bot IPC, emitting event:', type, nodeParameters);
                             ipc.of.bot.emit(type, {token: credentials.token, nodeParameters: nodeParameters});
 
                             ipc.of.bot.on('disconnect', () => {

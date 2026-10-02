@@ -17,6 +17,7 @@ import {
     getVoiceChannels as getVoiceChannelsHelper,
 } from '../helper';
 import settings from '../settings';
+import { debugLog } from '../logger';
 
 // Configure IPC for cross-platform compatibility
 function configureIpc() {
@@ -99,9 +100,11 @@ export class DiscordVoiceTrigger implements INodeType {
 
         await connection(credentials).catch((e) => e);
 
+        const debugLogging = !!(this.getNodeParameter('additionalOptions', {}) as { debugLogging?: boolean }).debugLogging;
+
         configureIpc();
         ipc.connectTo('bot', () => {
-            console.log('Connected to IPC server for voice trigger');
+            debugLog(debugLogging, 'Connected to IPC server for voice trigger');
 
             const parameters: any = {};
             Object.keys(this.getNode().parameters).forEach((key) => {
@@ -120,7 +123,7 @@ export class DiscordVoiceTrigger implements INodeType {
             // Handle voice state updates (join/leave)
             ipc.of.bot.on('voiceStateUpdate', ({ oldState, newState, member, guild, nodeId }: any) => {
                 if (this.getNode().id === nodeId) {
-                    console.log('Received voiceStateUpdate event');
+                    debugLog(debugLogging, 'Received voiceStateUpdate event');
 
                     const voiceStateData: any = {
                         userId: member.id,
@@ -151,7 +154,7 @@ export class DiscordVoiceTrigger implements INodeType {
             // Handle voice recordings
             ipc.of.bot.on('voiceRecording', ({ recording, user, channel, guild, nodeId, transcription }: any) => {
                 if (this.getNode().id === nodeId) {
-                    console.log('Received voice recording');
+                    debugLog(debugLogging, 'Received voice recording');
 
                     const recordingData: any = {
                         userId: user.id,
@@ -193,7 +196,7 @@ export class DiscordVoiceTrigger implements INodeType {
             // Handle voice activity (speaking start/stop)
             ipc.of.bot.on('voiceActivity', ({ user, channel, guild, nodeId, speaking, timestamp }: any) => {
                 if (this.getNode().id === nodeId) {
-                    console.log('Received voice activity event');
+                    debugLog(debugLogging, 'Received voice activity event');
 
                     const activityData: any = {
                         userId: user.id,
@@ -214,11 +217,17 @@ export class DiscordVoiceTrigger implements INodeType {
                 }
             });
 
-            // Handle errors
+            // Handle errors.
+            // Never throw here: this runs inside the IPC socket's data handler, so a throw is an
+            // uncaught exception. In manual (test) mode surface the error in the editor; for active
+            // workflows only log it, because emitError would make n8n deactivate and re-queue the
+            // whole trigger over a single failed voice join.
             ipc.of.bot.on('voiceError', ({ error, nodeId }: any) => {
                 if (this.getNode().id === nodeId) {
                     console.error('Voice trigger error:', error);
-                    throw new NodeOperationError(this.getNode(), error.message || 'Voice trigger error occurred');
+                    if (this.getMode() === 'manual') {
+                        this.emitError(new NodeOperationError(this.getNode(), error?.message || 'Voice trigger error occurred'));
+                    }
                 }
             });
         });
@@ -230,7 +239,7 @@ export class DiscordVoiceTrigger implements INodeType {
         // Return the cleanup function
         return {
             closeFunction: async () => {
-                console.log("Removing voice trigger node");
+                debugLog(debugLogging, "Removing voice trigger node");
 
                 delete settings.voiceTriggerNodes[this.getNode().id];
 
@@ -240,7 +249,7 @@ export class DiscordVoiceTrigger implements INodeType {
                     ipc.of.bot.emit('voiceTriggerNodeRemoved', { nodeId: this.getNode().id });
                 });
 
-                console.log('Voice trigger node removed, keeping bot IPC server running');
+                debugLog(debugLogging, 'Voice trigger node removed, keeping bot IPC server running');
             },
         };
     }

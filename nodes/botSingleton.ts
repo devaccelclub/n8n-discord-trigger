@@ -1,8 +1,19 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as net from 'net';
 import * as lockfile from 'proper-lockfile';
 import { execSync } from 'child_process';
+
+// Path of the IPC server socket created by `bot()`.
+// Must stay in sync with ipc.config.socketRoot + ipc.config.appspace + ipc.config.id
+// in nodes/bot.ts ('/tmp/' + 'app.' + 'bot'). Unix-like platforms only; on Windows
+// node-ipc uses a named pipe instead.
+const IPC_SOCKET_PATH = '/tmp/app.bot';
+
+// How long to wait for the IPC server to accept a probe connection. A timeout
+// means the holder may just be busy, so it never counts as "dead".
+const IPC_PROBE_TIMEOUT_MS = 1000;
 
 // Platform-specific lock directory
 const getLockDirectory = () => {
@@ -72,11 +83,8 @@ class BotSingleton {
         process.on('exit', cleanup);
         process.on('SIGINT', cleanup);
         process.on('SIGTERM', cleanup);
-        process.on('uncaughtException', (err) => {
-            console.error('Uncaught exception:', err);
-            cleanup();
-            process.exit(1);
-        });
+        // No 'uncaughtException' handler: n8n reports those itself and keeps running.
+        // Calling process.exit() here would turn any stray error into a full n8n crash.
         process.on('unhandledRejection', (reason, promise) => {
             console.error('Unhandled Rejection at:', promise, 'reason:', reason);
         });
@@ -144,26 +152,69 @@ class BotSingleton {
             if (fs.existsSync(this.lockFile)) {
                 const lockInfo = JSON.parse(fs.readFileSync(this.lockFile, 'utf-8'));
 
-                // Check if the process that created the lock is still running
+                // Check if the process that created the lock is still running.
+                // PID liveness alone is not enough: inside containers /tmp survives a
+                // restart and PIDs get reused, so the recorded PID can belong to an
+                // unrelated live process. Distrust the lock only if the IPC server it
+                // claims to have started is definitely gone.
                 if (lockInfo.pid && lockInfo.pid !== process.pid) {
-                    if (this.isProcessRunning(lockInfo.pid)) {
+                    if (this.isProcessRunning(lockInfo.pid) && !(await this.isIpcServerDead())) {
                         return true;
-                    } else {
-                        // Process is dead, clean up stale lock
-                        console.log(`Cleaning up stale lock from dead process ${lockInfo.pid}`);
-                        try {
-                            await lockfile.unlock(this.lockFile);
-                        } catch (e) {
-                            // Ignore unlock errors for stale locks
-                        }
-                        return false;
                     }
+
+                    // Stale lock: either the process is gone, or it is alive but is not
+                    // the bot (PID reuse) and its socket is missing or refuses connections.
+                    console.log(`Cleaning up stale lock from process ${lockInfo.pid} (process gone or IPC server not listening)`);
+                    try {
+                        await lockfile.unlock(this.lockFile);
+                    } catch (e) {
+                        // Ignore unlock errors for stale locks
+                    }
+                    // Do not remove the socket file here: we do not hold the lock yet, and if the
+                    // holder is in fact alive that would cut it off from new clients. node-ipc
+                    // removes a leftover socket itself in ipc.server.start(), which bot() only
+                    // calls after this process has acquired the lock.
+                    return false;
                 }
             }
         } catch (e) {
             console.error('Error checking lock status:', e);
         }
         return false;
+    }
+
+    /**
+     * Probe the IPC server with a real connection and report whether it is definitely
+     * gone: the socket file is missing (ENOENT), or it exists but nothing is listening
+     * (ECONNREFUSED). A leftover socket file with no listener is exactly the failure mode
+     * we are guarding against, so existence of the file is not enough - we have to connect.
+     * A timeout or any other error does not count as dead, because a holder that is
+     * merely busy can be slow to accept.
+     *
+     * On Windows node-ipc uses a named pipe whose path is not a filesystem entry we
+     * can reliably probe, so we keep the previous PID-only behaviour there.
+     */
+    private async isIpcServerDead(): Promise<boolean> {
+        if (process.platform === 'win32') {
+            return false;
+        }
+
+        return new Promise<boolean>((resolve) => {
+            let settled = false;
+            const socket = net.connect(IPC_SOCKET_PATH);
+
+            const finish = (dead: boolean) => {
+                if (settled) return;
+                settled = true;
+                socket.destroy();
+                resolve(dead);
+            };
+
+            socket.setTimeout(IPC_PROBE_TIMEOUT_MS, () => finish(false));
+            socket.once('connect', () => finish(false));
+            socket.once('error', (err: NodeJS.ErrnoException) =>
+                finish(err.code === 'ECONNREFUSED' || err.code === 'ENOENT'));
+        });
     }
 
     private isProcessRunning(pid: number): boolean {
